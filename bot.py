@@ -8,7 +8,8 @@ from config import (
     COC_API_KEY,
     CLAN_TAG,
     COC_BASE_URL,
-    CHECK_INTERVAL_MINUTES
+    CHECK_INTERVAL_MINUTES,
+    PING_TIMER_HOURS
 )
 from coc.client import ClashOfClansClient
 from coc.war_logic import parse_war_data, members_with_remaining_attacks
@@ -51,24 +52,59 @@ async def check_war(ctx):
     war = parse_war_data(raw_war)
     remaining = members_with_remaining_attacks(war)
     
+    # Sort by map position (war weight order)
+    remaining.sort(key=lambda m: m.map_position)
+    
+    # Calculate time remaining
+    from datetime import datetime
+    
+    time_remaining_str = "Unknown"
+    if war.state == "inWar":
+        try:
+            end_time_str = war.end_time.replace('Z', '+00:00')
+            end_time = datetime.fromisoformat(end_time_str.replace('.000', ''))
+            now = datetime.now(end_time.tzinfo)
+            
+            time_delta = end_time - now
+            hours = int(time_delta.total_seconds() // 3600)
+            minutes = int((time_delta.total_seconds() % 3600) // 60)
+            
+            if hours > 0:
+                time_remaining_str = f"{hours}h {minutes}m"
+            else:
+                time_remaining_str = f"{minutes}m"
+        except Exception as e:
+            print(f"Error calculating time remaining: {e}")
+            time_remaining_str = "Error calculating time"
+    
     if not remaining:
-        await ctx.send("✅ All attacks have been used!")
+        embed = discord.Embed(
+            title="⚔️ War Status",
+            description=f"**State:** {war.state}\n**Time Remaining:** {time_remaining_str}\n\n✅ All attacks have been used!",
+            color=discord.Color.green()
+        )
+        await ctx.send(embed=embed)
         return
     
     # Build response message with Discord mentions
     member_list = []
     for m in remaining:
         discord_id = member_mapper.get_discord_id(m.tag)
+        
+        attacks_text = f"{m.attacks_remaining} attack{'s' if m.attacks_remaining > 1 else ''} remaining"
+        
         if discord_id:
-            member_list.append(f"• <@{discord_id}> ({m.name}) - {m.attacks_remaining} attack{'s' if m.attacks_remaining > 1 else ''} remaining")
+            member_list.append(f"**#{m.map_position}** <@{discord_id}> ({m.name}) - {attacks_text}")
         else:
-            member_list.append(f"• {m.name} - {m.attacks_remaining} attack{'s' if m.attacks_remaining > 1 else ''} remaining ⚠️ *Not linked*")
+            member_list.append(f"**#{m.map_position}** {m.name} - {attacks_text} ⚠️ *Not linked*")
     
     embed = discord.Embed(
         title="⚔️ War Status",
-        description=f"**State:** {war.state}\n\n**Members with remaining attacks:**\n" + "\n".join(member_list),
+        description=f"**State:** {war.state}\n**Time Remaining:** {time_remaining_str}\n\n**Members with remaining attacks:**\n" + "\n".join(member_list),
         color=discord.Color.orange()
     )
+    
+    embed.set_footer(text=f"{len(remaining)} member{'s' if len(remaining) != 1 else ''} with attacks remaining")
     
     await ctx.send(embed=embed)
 
@@ -189,6 +225,64 @@ async def ping_command(ctx):
     await ctx.send(f"🏓 Pong! Latency: {round(bot.latency * 1000)}ms")
 
 
+@bot.command(name="commands")
+async def show_commands(ctx):
+    """Display all available bot commands"""
+    
+    # General commands (everyone can use)
+    general_commands = [
+        ("!war", "Check current war status and see who has attacks remaining"),
+        ("!linkme <tag>", "Link your CoC player tag to your Discord account\n*Example: !linkme #ABC123*"),
+        ("!mappings", "Show all current CoC tag → Discord user mappings"),
+        ("!unlinked", "Show all clan members not linked to Discord accounts"),
+        ("!ping", "Check if the bot is online and responsive"),
+        ("!commands", "Show this command list")
+    ]
+    
+    # Admin commands (requires administrator permission)
+    admin_commands = [
+        ("!link <tag> @user", "Link a CoC player tag to a Discord user\n*Example: !link #ABC123 @PlayerName*"),
+        ("!unlink <tag>", "Remove a CoC tag mapping\n*Example: !unlink #ABC123*"),
+        ("!pingwar", "Manually ping all members with remaining attacks")
+    ]
+    
+    # Build general commands section
+    general_text = "\n\n".join([f"**{cmd}**\n{desc}" for cmd, desc in general_commands])
+    
+    # Build admin commands section
+    admin_text = "\n\n".join([f"**{cmd}**\n{desc}" for cmd, desc in admin_commands])
+    
+    # Create embed
+    embed = discord.Embed(
+        title="📜 Bot Commands",
+        description="Here are all available commands for the Clash of Clans War Bot:",
+        color=discord.Color.blue()
+    )
+    
+    embed.add_field(
+        name="👥 General Commands",
+        value=general_text,
+        inline=False
+    )
+    
+    embed.add_field(
+        name="🔧 Admin Commands",
+        value=admin_text,
+        inline=False
+    )
+    
+    embed.add_field(
+        name="ℹ️ How It Works",
+        value="The bot monitors your clan war and will automatically ping linked members when the war is ending soon. "
+              f"Members are pinged when there are **{PING_TIMER_HOURS} hours or less** remaining in the war.",
+        inline=False
+    )
+    
+    embed.set_footer(text=f"Bot checks war status every {CHECK_INTERVAL_MINUTES} minutes")
+    
+    await ctx.send(embed=embed)
+
+
 @bot.command(name="pingwar")
 async def ping_war_members(ctx):
     """Manually ping all members with remaining attacks"""
@@ -233,9 +327,19 @@ async def ping_war_members(ctx):
         await ctx.send(warning)
 
 
+# Track war state
+current_war_state = {
+    "end_time": None,
+    "last_pinged": None,
+    "members_with_attacks": []
+}
+
+
 @tasks.loop(minutes=CHECK_INTERVAL_MINUTES)
 async def check_war_status():
-    """Background task that runs every X minutes to check war status and ping members"""
+    """Background task that monitors war status and pings members when war is ending"""
+    global current_war_state
+    
     channel = bot.get_channel(DISCORD_CHANNEL_ID)
     
     if not channel:
@@ -246,40 +350,67 @@ async def check_war_status():
     
     if not raw_war:
         print("No active war detected.")
+        current_war_state = {"end_time": None, "last_pinged": None, "members_with_attacks": []}
         return
     
     war = parse_war_data(raw_war)
     
-    # Only send notifications during active war
+    # Only monitor during active war
     if war.state != "inWar":
-        print(f"War state is '{war.state}', not sending notifications.")
+        print(f"War state is '{war.state}', not in war.")
+        current_war_state = {"end_time": None, "last_pinged": None, "members_with_attacks": []}
         return
+    
+    # Update war state
+    current_war_state["end_time"] = war.end_time
     
     remaining = members_with_remaining_attacks(war)
     
     if not remaining:
         print("All attacks have been used!")
+        current_war_state["members_with_attacks"] = []
         return
     
-    print(f"Found {len(remaining)} members with remaining attacks.")
+    # Store current members with attacks
+    current_war_state["members_with_attacks"] = [m.tag for m in remaining]
+    print(f"War active. {len(remaining)} members with remaining attacks.")
     
-    # Separate members into linked and unlinked
-    linked_members = []
-    unlinked_members = []
+    # Check if war is ending soon (within PING_TIMER_HOURS)
+    from datetime import datetime
     
-    for member in remaining:
-        discord_id = member_mapper.get_discord_id(member.tag)
-        if discord_id:
-            linked_members.append((member, discord_id))
+    # Parse end time (format: "20250122T123456.000Z")
+    end_time_str = war.end_time.replace('Z', '+00:00')
+    end_time = datetime.fromisoformat(end_time_str.replace('.000', ''))
+    now = datetime.now(end_time.tzinfo)
+    
+    time_remaining = (end_time - now).total_seconds() / 3600  # Hours remaining
+    
+    # Only ping if war is ending within configured hours AND we haven't pinged yet
+    if time_remaining <= PING_TIMER_HOURS and current_war_state["last_pinged"] != war.end_time:
+        print(f"War ending in {time_remaining:.1f} hours. Sending reminder...")
+        
+        # Separate members into linked and unlinked
+        linked_members = []
+        
+        for member in remaining:
+            discord_id = member_mapper.get_discord_id(member.tag)
+            if discord_id:
+                linked_members.append((member, discord_id))
+        
+        # Send ping message for linked members
+        if linked_members:
+            mentions = [f"<@{discord_id}>" for _, discord_id in linked_members]
+            hours_text = f"{time_remaining:.1f} hours" if time_remaining > 1 else f"{time_remaining * 60:.0f} minutes"
+            ping_message = f"⚔️ **WAR ENDING SOON** ⚔️\n\n{' '.join(mentions)}\n\n⏰ War ends in **{hours_text}**!\nYou still have attacks remaining. Don't forget to attack!"
+            await channel.send(ping_message)
+            print(f"Pinged {len(linked_members)} members")
+            
+            # Mark that we've pinged for this war
+            current_war_state["last_pinged"] = war.end_time
         else:
-            unlinked_members.append(member)
-    
-    # Send ping message for linked members
-    if linked_members:
-        mentions = [f"<@{discord_id}>" for _, discord_id in linked_members]
-        ping_message = f"⚔️ **WAR REMINDER** ⚔️\n\n{' '.join(mentions)}\n\nYou have attacks remaining! Don't forget to attack before the war ends!"
-        await channel.send(ping_message)
-        print(f"Pinged {len(linked_members)} members")
+            print("No linked members to ping.")
+    else:
+        print(f"War has {time_remaining:.1f} hours remaining. Not pinging yet.")
 
 
 @check_war_status.before_loop

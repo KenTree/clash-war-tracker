@@ -8,6 +8,7 @@ class Member:
     name: str
     tag: str
     attacks_used: int
+    map_position: int  # Position in war (1 = top, 2 = second, etc.)
 
     @property
     def attacks_remaining(self) -> int:

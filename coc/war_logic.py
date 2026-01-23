@@ -12,7 +12,8 @@ def parse_war_data(raw_data: dict) -> War:
             Member(
                 name=m["name"],
                 tag=m["tag"],
-                attacks_used=attacks_used
+                attacks_used=attacks_used,
+                map_position=m["mapPosition"]  # Get war position from API
             )
         )
 
