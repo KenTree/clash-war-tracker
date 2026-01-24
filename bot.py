@@ -1,6 +1,9 @@
 # bot.py
 import discord
 from discord.ext import commands, tasks
+from datetime import datetime, timezone
+import asyncio
+from collections import defaultdict
 from config import (
     DISCORD_TOKEN, 
     DISCORD_GUILD_ID, 
@@ -25,6 +28,36 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 coc_client = ClashOfClansClient(COC_API_KEY, COC_BASE_URL)
 member_mapper = MemberMapper()
 
+# Rate limiting: Track last command use per user
+user_cooldowns = defaultdict(lambda: 0)
+COMMAND_COOLDOWN_SECONDS = 3  # Cooldown between commands per user
+
+
+def is_cwl_week() -> bool:
+    """
+    Check if we're in a CWL week (first week of the month).
+    CWL typically runs during days 1-9 of each month.
+    """
+    now = datetime.now(timezone.utc)
+    return 1 <= now.day <= 9
+
+
+async def check_rate_limit(ctx) -> bool:
+    """
+    Check if user is rate limited. Returns True if allowed, False if rate limited.
+    """
+    user_id = ctx.author.id
+    now = asyncio.get_event_loop().time()
+    last_used = user_cooldowns[user_id]
+    
+    if now - last_used < COMMAND_COOLDOWN_SECONDS:
+        remaining = COMMAND_COOLDOWN_SECONDS - (now - last_used)
+        await ctx.send(f"⏳ Please wait {remaining:.1f}s before using another command.", delete_after=5)
+        return False
+    
+    user_cooldowns[user_id] = now
+    return True
+
 
 @bot.event
 async def on_ready():
@@ -43,6 +76,9 @@ async def on_ready():
 @bot.command(name="war")
 async def check_war(ctx):
     """Manual command to check current war status"""
+    if not await check_rate_limit(ctx):
+        return
+    
     raw_war = coc_client.get_current_war(CLAN_TAG)
     
     if not raw_war:
@@ -56,8 +92,6 @@ async def check_war(ctx):
     remaining.sort(key=lambda m: m.map_position)
     
     # Calculate time remaining
-    from datetime import datetime
-    
     time_remaining_str = "Unknown"
     if war.state == "inWar":
         try:
@@ -115,6 +149,9 @@ async def link_member(ctx, coc_tag: str, member: discord.Member):
     Link a CoC player tag to a Discord user
     Usage: !link #ABC123 @DiscordUser
     """
+    if not await check_rate_limit(ctx):
+        return
+    
     if not ctx.author.guild_permissions.administrator:
         await ctx.send("❌ Only administrators can link members.")
         return
@@ -131,6 +168,9 @@ async def unlink_member(ctx, coc_tag: str):
     Unlink a CoC player tag
     Usage: !unlink #ABC123
     """
+    if not await check_rate_limit(ctx):
+        return
+    
     if not ctx.author.guild_permissions.administrator:
         await ctx.send("❌ Only administrators can unlink members.")
         return
@@ -144,6 +184,9 @@ async def unlink_member(ctx, coc_tag: str):
 @bot.command(name="mappings")
 async def show_mappings(ctx):
     """Show all current CoC tag to Discord user mappings"""
+    if not await check_rate_limit(ctx):
+        return
+    
     mappings = member_mapper.get_all_mappings()
     
     if not mappings:
@@ -168,6 +211,9 @@ async def show_mappings(ctx):
 @bot.command(name="unlinked")
 async def show_unlinked(ctx):
     """Show all clan members who are NOT linked to Discord accounts"""
+    if not await check_rate_limit(ctx):
+        return
+    
     # Get current war to fetch clan members
     raw_war = coc_client.get_current_war(CLAN_TAG)
     
@@ -215,6 +261,9 @@ async def link_me(ctx, coc_tag: str):
     Link your own CoC tag to your Discord account
     Usage: !linkme #ABC123
     """
+    if not await check_rate_limit(ctx):
+        return
+    
     member_mapper.add_mapping(coc_tag, ctx.author.id)
     await ctx.send(f"✅ Linked your account to CoC tag `{coc_tag}`")
 
@@ -222,12 +271,17 @@ async def link_me(ctx, coc_tag: str):
 @bot.command(name="ping")
 async def ping_command(ctx):
     """Test command to check if bot is responsive"""
+    if not await check_rate_limit(ctx):
+        return
+    
     await ctx.send(f"🏓 Pong! Latency: {round(bot.latency * 1000)}ms")
 
 
 @bot.command(name="commands")
 async def show_commands(ctx):
     """Display all available bot commands"""
+    if not await check_rate_limit(ctx):
+        return
     
     # General commands (everyone can use)
     general_commands = [
@@ -286,6 +340,9 @@ async def show_commands(ctx):
 @bot.command(name="pingwar")
 async def ping_war_members(ctx):
     """Manually ping all members with remaining attacks"""
+    if not await check_rate_limit(ctx):
+        return
+    
     if not ctx.author.guild_permissions.administrator:
         await ctx.send("❌ Only administrators can manually ping war members.")
         return
@@ -355,6 +412,14 @@ async def check_war_status():
     
     war = parse_war_data(raw_war)
     
+    # Check if this is CWL during CWL week
+    is_cwl = is_cwl_week() and war.is_cwl
+    
+    if is_cwl:
+        print("CWL war detected - skipping automated pings (CWL wars are 24h and don't need same monitoring)")
+        current_war_state = {"end_time": None, "last_pinged": None, "members_with_attacks": []}
+        return
+    
     # Only monitor during active war
     if war.state != "inWar":
         print(f"War state is '{war.state}', not in war.")
@@ -376,8 +441,6 @@ async def check_war_status():
     print(f"War active. {len(remaining)} members with remaining attacks.")
     
     # Check if war is ending soon (within PING_TIMER_HOURS)
-    from datetime import datetime
-    
     # Parse end time (format: "20250122T123456.000Z")
     end_time_str = war.end_time.replace('Z', '+00:00')
     end_time = datetime.fromisoformat(end_time_str.replace('.000', ''))
