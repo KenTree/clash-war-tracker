@@ -13,15 +13,19 @@ def parse_war_data(raw_data: dict) -> War:
                 name=m["name"],
                 tag=m["tag"],
                 attacks_used=attacks_used,
-                map_position=m["mapPosition"]  # Get war position from API
+                map_position=m["mapPosition"]
             )
         )
+    
+    # CWL wars have "warLeague" in the response instead of regular war data
+    is_cwl = raw_data.get("isWarLogPublic") is None or "warLeague" in raw_data
 
     return War(
         state=raw_data["state"],
         start_time=raw_data["startTime"],
         end_time=raw_data["endTime"],
-        members=members
+        members=members,
+        is_cwl=is_cwl
     )
 
 
