@@ -52,7 +52,7 @@ async def check_rate_limit(ctx) -> bool:
     
     if now - last_used < COMMAND_COOLDOWN_SECONDS:
         remaining = COMMAND_COOLDOWN_SECONDS - (now - last_used)
-        await ctx.send(f"⏳ Please wait {remaining:.1f}s before using another command.", delete_after=5)
+        await ctx.send(f"Please wait {remaining:.1f}s before using another command.", delete_after=5)
         return False
     
     user_cooldowns[user_id] = now
@@ -133,7 +133,7 @@ async def check_war(ctx):
             member_list.append(f"**#{m.map_position}** {m.name} - {attacks_text} *Not linked*")
     
     embed = discord.Embed(
-        title="⚔️ War Status",
+        title="War Status",
         description=f"**State:** {war.state}\n**Time Remaining:** {time_remaining_str}\n\n**Members with remaining attacks:**\n" + "\n".join(member_list),
         color=discord.Color.orange()
     )
@@ -374,13 +374,13 @@ async def ping_war_members(ctx):
     # Build ping message
     if linked_members:
         mentions = [f"<@{discord_id}>" for _, discord_id in linked_members]
-        ping_message = f"⚔️ **WAR REMINDER** ⚔️\n\n{' '.join(mentions)}\n\nYou have attacks remaining! Don't forget to attack before the war ends!"
+        ping_message = f" **WAR REMINDER** \n\n{' '.join(mentions)}\n\nYou have attacks remaining! Don't forget to attack before the war ends!"
         await ctx.send(ping_message)
     
     # Notify about unlinked members
     if unlinked_members:
         unlinked_names = [m.name for m in unlinked_members]
-        warning = f"⚠️ **Unlinked members with remaining attacks:**\n" + "\n".join([f"• {name}" for name in unlinked_names])
+        warning = f"**Unlinked members with remaining attacks:**\n" + "\n".join([f"• {name}" for name in unlinked_names])
         await ctx.send(warning)
 
 
@@ -464,7 +464,7 @@ async def check_war_status():
         if linked_members:
             mentions = [f"<@{discord_id}>" for _, discord_id in linked_members]
             hours_text = f"{time_remaining:.1f} hours" if time_remaining > 1 else f"{time_remaining * 60:.0f} minutes"
-            ping_message = f"⚔️ **WAR ENDING SOON** ⚔️\n\n{' '.join(mentions)}\n\n⏰ War ends in **{hours_text}**!\nYou still have attacks remaining. Don't forget to attack!"
+            ping_message = f" **WAR ENDING SOON** \n\n{' '.join(mentions)}\n\n War ends in **{hours_text}**!\nYou still have attacks remaining. Don't forget to attack!"
             await channel.send(ping_message)
             print(f"Pinged {len(linked_members)} members")
             
