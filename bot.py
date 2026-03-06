@@ -41,6 +41,12 @@ def is_cwl_week() -> bool:
     now = datetime.now(timezone.utc)
     return 1 <= now.day <= 9
 
+def parse_coc_time(time_str: str) -> datetime:
+    """Parse CoC time format which can be either ISO or compact: 20260306T201037+00:00"""
+    time_str = time_str.replace('Z', '+00:00').replace('.000', '')
+    if 'T' in time_str and '-' not in time_str[:8]:
+        time_str = f"{time_str[:4]}-{time_str[4:6]}-{time_str[6:8]}T{time_str[9:11]}:{time_str[11:13]}:{time_str[13:15]}{time_str[15:]}"
+    return datetime.fromisoformat(time_str)
 
 async def check_rate_limit(ctx) -> bool:
     """
@@ -60,16 +66,17 @@ async def check_rate_limit(ctx) -> bool:
 
 
 def get_war(clan_tag: str) -> dict | None:
+    """
+    Fetch current war, falling back to CWL if no regular war is active.
+    """
     raw_war = coc_client.get_current_war(clan_tag)
 
     if not raw_war or raw_war.get("state") == "notInWar":
-        cwl_war = coc_client.get_active_cwl_war(clan_tag)
-        if cwl_war:
-            # Tag it so bot.py knows it's CWL
-            cwl_war["_is_cwl"] = True
-        return cwl_war
+        print("No regular war found, checking for active CWL war...")
+        raw_war = coc_client.get_active_cwl_war(clan_tag)
 
     return raw_war
+
 
 @bot.event
 async def on_ready():
@@ -97,10 +104,6 @@ async def check_war(ctx):
         await ctx.send("No active war found.")
         return
 
-    if raw_war.get("_is_cwl"):
-        await ctx.send("⚔️ CWL is currently ongoing. War information is unavailable during CWL.")
-        return
-
     war = parse_war_data(raw_war)
 
     if war is None:
@@ -116,8 +119,7 @@ async def check_war(ctx):
     time_remaining_str = "Unknown"
     if war.state == "inWar":
         try:
-            end_time_str = war.end_time.replace('Z', '+00:00')
-            end_time = datetime.fromisoformat(end_time_str.replace('.000', ''))
+            end_time = parse_coc_time(war.end_time)
             now = datetime.now(end_time.tzinfo)
 
             time_delta = end_time - now
@@ -132,12 +134,17 @@ async def check_war(ctx):
             print(f"Error calculating time remaining: {e}")
             time_remaining_str = "Error calculating time"
 
+    # Set title and footer based on war type
+    war_title = "CWL War Status" if war.is_cwl else "War Status"
+    attacks_note = "1 attack per member" if war.is_cwl else "2 attacks per member"
+
     if not remaining:
         embed = discord.Embed(
-            title="⚔️ War Status",
-            description=f"**State:** {war.state}\n**Time Remaining:** {time_remaining_str}\n\n All attacks have been used!",
+            title=war_title,
+            description=f"**State:** {war.state}\n**Time Remaining:** {time_remaining_str}\n\nAll attacks have been used!",
             color=discord.Color.green()
         )
+        embed.set_footer(text=attacks_note)
         await ctx.send(embed=embed)
         return
 
@@ -145,7 +152,6 @@ async def check_war(ctx):
     member_list = []
     for m in remaining:
         discord_id = member_mapper.get_discord_id(m.tag)
-
         attacks_text = f"{m.attacks_remaining} attack{'s' if m.attacks_remaining > 1 else ''} remaining"
 
         if discord_id:
@@ -154,12 +160,12 @@ async def check_war(ctx):
             member_list.append(f"**#{m.map_position}** {m.name} - {attacks_text} *Not linked*")
 
     embed = discord.Embed(
-        title="War Status",
+        title=war_title,
         description=f"**State:** {war.state}\n**Time Remaining:** {time_remaining_str}\n\n**Members with remaining attacks:**\n" + "\n".join(member_list),
         color=discord.Color.orange()
     )
 
-    embed.set_footer(text=f"{len(remaining)} member{'s' if len(remaining) != 1 else ''} with attacks remaining")
+    embed.set_footer(text=f"{len(remaining)} member{'s' if len(remaining) != 1 else ''} with attacks remaining • {attacks_note}")
 
     await ctx.send(embed=embed)
 
@@ -177,9 +183,7 @@ async def link_member(ctx, coc_tag: str, member: discord.Member):
         await ctx.send("Only administrators can link members.")
         return
 
-    # Add the mapping
     member_mapper.add_mapping(coc_tag, member.id)
-
     await ctx.send(f"Linked CoC tag `{coc_tag}` to {member.mention}")
 
 
@@ -214,14 +218,13 @@ async def show_mappings(ctx):
         await ctx.send("No member mappings found. Use `!link` to add mappings.")
         return
 
-    # Build list of mappings
     mapping_list = []
     for coc_tag, discord_id in mappings.items():
         user = await bot.fetch_user(discord_id)
         mapping_list.append(f"• `{coc_tag}` → {user.mention} ({user.name})")
 
     embed = discord.Embed(
-        title="🔗 Member Mappings",
+        title="Member Mappings",
         description="\n".join(mapping_list),
         color=discord.Color.blue()
     )
@@ -247,7 +250,6 @@ async def show_unlinked(ctx):
         await ctx.send("Could not retrieve war data. Check API key IP whitelist.")
         return
 
-    # Check which members are not linked
     unlinked = []
     linked = []
 
@@ -261,17 +263,16 @@ async def show_unlinked(ctx):
         await ctx.send("All clan members are linked to Discord accounts!")
         return
 
-    # Build unlinked member list
     unlinked_list = "\n".join([f"• {m.name} - `{m.tag}`" for m in unlinked])
 
     embed = discord.Embed(
-        title="⚠️ Unlinked Clan Members",
+        title="Unlinked Clan Members",
         description=f"**{len(unlinked)}/{len(war.members)} members are not linked**\n\n{unlinked_list}\n\n*Use `!link <tag> @user` or ask members to use `!linkme <tag>`*",
         color=discord.Color.red()
     )
 
     embed.add_field(
-        name="📊 Summary",
+        name="Summary",
         value=f"Linked: {len(linked)} | Unlinked: {len(unlinked)}",
         inline=False
     )
@@ -307,9 +308,8 @@ async def show_commands(ctx):
     if not await check_rate_limit(ctx):
         return
 
-    # General commands (everyone can use)
     general_commands = [
-        ("!war", "Check current war status and see who has attacks remaining"),
+        ("!war", "Check current war status and see who has attacks remaining (works for both regular war and CWL)"),
         ("!linkme <tag>", "Link your CoC player tag to your Discord account\n*Example: !linkme #ABC123*"),
         ("!mappings", "Show all current CoC tag → Discord user mappings"),
         ("!unlinked", "Show all clan members not linked to Discord accounts"),
@@ -317,47 +317,32 @@ async def show_commands(ctx):
         ("!commands", "Show this command list")
     ]
 
-    # Admin commands (requires administrator permission)
     admin_commands = [
         ("!link <tag> @user", "Link a CoC player tag to a Discord user\n*Example: !link #ABC123 @PlayerName*"),
         ("!unlink <tag>", "Remove a CoC tag mapping\n*Example: !unlink #ABC123*"),
         ("!pingwar", "Manually ping all members with remaining attacks")
     ]
 
-    # Build general commands section
     general_text = "\n\n".join([f"**{cmd}**\n{desc}" for cmd, desc in general_commands])
-
-    # Build admin commands section
     admin_text = "\n\n".join([f"**{cmd}**\n{desc}" for cmd, desc in admin_commands])
 
-    # Create embed
     embed = discord.Embed(
-        title="📜 Bot Commands",
+        title="Bot Commands",
         description="Here are all available commands for the Clash of Clans War Bot:",
         color=discord.Color.blue()
     )
 
+    embed.add_field(name="General Commands", value=general_text, inline=False)
+    embed.add_field(name="Admin Commands", value=admin_text, inline=False)
     embed.add_field(
-        name="👥 General Commands",
-        value=general_text,
-        inline=False
-    )
-
-    embed.add_field(
-        name="🔧 Admin Commands",
-        value=admin_text,
-        inline=False
-    )
-
-    embed.add_field(
-        name="ℹ️ How It Works",
+        name="How It Works",
         value="The bot monitors your clan war and will automatically ping linked members when the war is ending soon. "
-              f"Members are pinged when there are **{PING_TIMER_HOURS} hours or less** remaining in the war.",
+              f"Members are pinged when there are **{PING_TIMER_HOURS} hours or less** remaining in the war. "
+              "Supports both regular wars and CWL.",
         inline=False
     )
 
     embed.set_footer(text=f"Bot checks war status every {CHECK_INTERVAL_MINUTES} minutes")
-
     await ctx.send(embed=embed)
 
 
@@ -389,7 +374,6 @@ async def ping_war_members(ctx):
         await ctx.send("All attacks have been used!")
         return
 
-    # Separate members into linked and unlinked
     linked_members = []
     unlinked_members = []
 
@@ -400,13 +384,13 @@ async def ping_war_members(ctx):
         else:
             unlinked_members.append(member)
 
-    # Build ping message
+    war_label = "CWL WAR" if war.is_cwl else "WAR"
+
     if linked_members:
         mentions = [f"<@{discord_id}>" for _, discord_id in linked_members]
-        ping_message = f" **WAR REMINDER** \n\n{' '.join(mentions)}\n\nYou have attacks remaining! Don't forget to attack before the war ends!"
+        ping_message = f"**{war_label} REMINDER** \n\n{' '.join(mentions)}\n\nYou have attacks remaining! Don't forget to attack before the war ends!"
         await ctx.send(ping_message)
 
-    # Notify about unlinked members
     if unlinked_members:
         unlinked_names = [m.name for m in unlinked_members]
         warning = f"**Unlinked members with remaining attacks:**\n" + "\n".join([f"• {name}" for name in unlinked_names])
@@ -445,21 +429,13 @@ async def check_war_status():
         print("Could not parse war data. Skipping this check")
         return
 
-    # Check if this is CWL during CWL week
-    is_cwl = is_cwl_week() and war.is_cwl
-
-    if is_cwl:
-        print("CWL war detected - skipping automated pings (CWL wars are 24h and don't need same monitoring)")
-        current_war_state = {"end_time": None, "last_pinged": None, "members_with_attacks": []}
-        return
-
     # Only monitor during active war
     if war.state != "inWar":
         print(f"War state is '{war.state}', not in war.")
         current_war_state = {"end_time": None, "last_pinged": None, "members_with_attacks": []}
         return
 
-    # Update war state
+    war_label = "CWL" if war.is_cwl else "Regular war"
     current_war_state["end_time"] = war.end_time
 
     remaining = members_with_remaining_attacks(war)
@@ -469,23 +445,20 @@ async def check_war_status():
         current_war_state["members_with_attacks"] = []
         return
 
-    # Store current members with attacks
     current_war_state["members_with_attacks"] = [m.tag for m in remaining]
-    print(f"War active. {len(remaining)} members with remaining attacks.")
+    print(f"{war_label} active. {len(remaining)} members with remaining attacks.")
 
-    # Check if war is ending soon (within PING_TIMER_HOURS)
     end_time_str = war.end_time.replace('Z', '+00:00')
-    end_time = datetime.fromisoformat(end_time_str.replace('.000', ''))
+    # Handle CoC compact format: 20260306T201037.000+00:00 or 20260306T201037+00:00
+    end_time = parse_coc_time(war.end_time)
     now = datetime.now(end_time.tzinfo)
 
     time_remaining = (end_time - now).total_seconds() / 3600  # Hours remaining
 
-    # Only ping if war is ending within configured hours AND we haven't pinged yet
     if time_remaining <= PING_TIMER_HOURS and current_war_state["last_pinged"] != war.end_time:
-        print(f"War ending in {time_remaining:.1f} hours. Sending reminder...")
+        print(f"{war_label} ending in {time_remaining:.1f} hours. Sending reminder...")
 
         linked_members = []
-
         for member in remaining:
             discord_id = member_mapper.get_discord_id(member.tag)
             if discord_id:
@@ -494,15 +467,15 @@ async def check_war_status():
         if linked_members:
             mentions = [f"<@{discord_id}>" for _, discord_id in linked_members]
             hours_text = f"{time_remaining:.1f} hours" if time_remaining > 1 else f"{time_remaining * 60:.0f} minutes"
-            ping_message = f" **WAR ENDING SOON** \n\n{' '.join(mentions)}\n\n War ends in **{hours_text}**!\nYou still have attacks remaining. Don't forget to attack!"
+            war_label_upper = "CWL WAR" if war.is_cwl else "WAR"
+            ping_message = f"**{war_label_upper} ENDING SOON** \n\n{' '.join(mentions)}\n\nWar ends in **{hours_text}**!\nYou still have attacks remaining. Don't forget to attack!"
             await channel.send(ping_message)
             print(f"Pinged {len(linked_members)} members")
-
             current_war_state["last_pinged"] = war.end_time
         else:
             print("No linked members to ping.")
     else:
-        print(f"War has {time_remaining:.1f} hours remaining. Not pinging yet.")
+        print(f"{war_label} has {time_remaining:.1f} hours remaining. Not pinging yet.")
 
 
 @check_war_status.before_loop
