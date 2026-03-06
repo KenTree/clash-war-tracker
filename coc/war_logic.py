@@ -10,7 +10,9 @@ def parse_war_data(raw_data: dict) -> War:
         print("No members found in war data. Check API key IP whitelist.")
         return None
 
-    members = []  # Clean list for parsed Member objects
+    is_cwl = "warLeague" in raw_data or raw_data.get("isWarLogPublic") is None
+
+    members = []
 
     for m in raw_members:
         attacks_used = len(m.get("attacks", []))
@@ -19,11 +21,10 @@ def parse_war_data(raw_data: dict) -> War:
                 name=m["name"],
                 tag=m["tag"],
                 attacks_used=attacks_used,
-                map_position=m["mapPosition"]
+                map_position=m["mapPosition"],
+                is_cwl=is_cwl  # each member knows if it's CWL
             )
         )
-
-    is_cwl = raw_data.get("isWarLogPublic") is None or "warLeague" in raw_data
 
     return War(
         state=raw_data["state"],
