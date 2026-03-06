@@ -85,6 +85,10 @@ async def on_ready():
     print(f"Guild ID: {DISCORD_GUILD_ID}")
     print(f"Channel ID: {DISCORD_CHANNEL_ID}")
 
+    await bot.change_presence(
+        activity=discord.Game(name="Use !commands for help")
+    )
+
     # Start the background task to check war status
     if not check_war_status.is_running():
         check_war_status.start()
