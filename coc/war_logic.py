@@ -3,22 +3,28 @@ from coc.models import War, Member
 
 
 def parse_war_data(raw_data: dict) -> War:
-    clan_data = raw_data["clan"]
+    clan_data = raw_data.get("clan", {})
+    raw_members = clan_data.get("members", [])
+
+    if not raw_members:
+        print("No members found in war data. Check API key IP whitelist.")
+        return None
+
+    is_cwl = "warLeague" in raw_data or raw_data.get("isWarLogPublic") is None
+
     members = []
 
-    for m in clan_data["members"]:
+    for m in raw_members:
         attacks_used = len(m.get("attacks", []))
         members.append(
             Member(
                 name=m["name"],
                 tag=m["tag"],
                 attacks_used=attacks_used,
-                map_position=m["mapPosition"]
+                map_position=m["mapPosition"],
+                is_cwl=is_cwl  # each member knows if it's CWL
             )
         )
-    
-    # CWL wars have "warLeague" in the response instead of regular war data
-    is_cwl = raw_data.get("isWarLogPublic") is None or "warLeague" in raw_data
 
     return War(
         state=raw_data["state"],

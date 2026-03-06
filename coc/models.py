@@ -8,10 +8,12 @@ class Member:
     tag: str
     attacks_used: int
     map_position: int
+    is_cwl: bool = False
 
     @property
     def attacks_remaining(self) -> int:
-        return 2 - self.attacks_used
+        max_attacks = 1 if self.is_cwl else 2
+        return max_attacks - self.attacks_used
 
 
 @dataclass
