@@ -448,7 +448,6 @@ async def check_war_status():
     current_war_state["members_with_attacks"] = [m.tag for m in remaining]
     print(f"{war_label} active. {len(remaining)} members with remaining attacks.")
 
-    end_time_str = war.end_time.replace('Z', '+00:00')
     # Handle CoC compact format: 20260306T201037.000+00:00 or 20260306T201037+00:00
     end_time = parse_coc_time(war.end_time)
     now = datetime.now(end_time.tzinfo)
