@@ -13,7 +13,7 @@ class Member:
     @property
     def attacks_remaining(self) -> int:
         max_attacks = 1 if self.is_cwl else 2
-        return max_attacks - self.attacks_used
+        return max(0, max_attacks - self.attacks_used)
 
 
 @dataclass
