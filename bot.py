@@ -97,6 +97,10 @@ async def check_war(ctx):
         await ctx.send("No active war found.")
         return
 
+    if raw_war.get("_is_cwl"):
+        await ctx.send("⚔️ CWL is currently ongoing. War information is unavailable during CWL.")
+        return
+
     war = parse_war_data(raw_war)
 
     if war is None:
