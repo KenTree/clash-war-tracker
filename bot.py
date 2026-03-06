@@ -91,6 +91,63 @@ async def on_ready():
 
     print("War monitoring started!")
 
+@bot.command(name="remind")
+async def remind_member(ctx, member: discord.Member, delay_minutes: int = 30):
+    """"Command to remind a linked member to attack after a certain time"""
+    if not await check_rate_limit(ctx):
+        return
+
+    is_admin = ctx.author.guild_permissions.administrator
+    is_self = ctx.author.id == member.id
+
+    # Non-admins can only remind themselves
+    if not is_admin and not is_self:
+        await ctx.send("You can only set a reminder for yourself. Admins can remind any member.")
+        return
+
+    # If reminding themselves, check they are linked
+    if is_self and not is_admin:
+        coc_tag = member_mapper.get_coc_tag(ctx.author.id)
+        if not coc_tag:
+            await ctx.send("You are not linked to a CoC account. Use `!linkme <tag>` first.")
+            return
+
+    # Check if target member is linked (for informational purposes)
+    coc_tag = member_mapper.get_coc_tag(member.id)
+    linked = coc_tag is not None
+
+    if not linked and not is_admin:
+        await ctx.send(f"{member.display_name} is not linked to a CoC account.")
+        return
+
+    # Confirm reminder was set
+    linked_note = f"(CoC: `{coc_tag}`)" if linked else "*(not linked to CoC)*"
+    await ctx.send(
+        f"Reminder set for {member.mention} {linked_note} in {delay_minutes} minute{'s' if delay_minutes != 1 else ''}."
+    )
+
+    # Wait then ping
+    await asyncio.sleep(delay_minutes * 60)
+
+    raw_war = get_war(CLAN_TAG)
+    if not raw_war:
+        return
+
+    war = parse_war_data(raw_war)
+    if war is None:
+        return
+
+    # If linked, check if they actually still have attacks before pinging
+    if linked:
+        remaining = members_with_remaining_attacks(war)
+        still_has_attack = any(m.tag == coc_tag for m in remaining)
+
+        if not still_has_attack:
+            await ctx.send(f"Reminder cancelled — {member.mention} has already used their attack.")
+            return
+
+    war_label = "CWL" if war.is_cwl else "war"
+    await ctx.send(f"{member.mention} — reminder to use your {war_label} attack!")
 
 @bot.command(name="war")
 async def check_war(ctx):
